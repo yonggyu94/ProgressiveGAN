@@ -2,12 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.nn.utils.spectral_norm as spectral_norm
-
-
-''' Device type'''
-dev = 'cpu'
-if torch.cuda.is_available():
-    dev = 'cuda'
+import math
 
 
 class WrongNormException(Exception):
@@ -23,6 +18,12 @@ class WrongNonLinearException(Exception):
 class EqualLR:
     def __init__(self, name):
         self.name = name
+
+    def compute_weight(self, module):
+        weight = getattr(module, self.name + '_orig')
+        fan_in = weight.data.size(1) * weight.data[0][0].numel()
+
+        return weight * math.sqrt(2 / fan_in)
 
     @staticmethod
     def apply(module, name):
@@ -51,8 +52,8 @@ class EqualizedConv2d(nn.Module):
         super(EqualizedConv2d, self).__init__()
         conv = nn.Conv2d(in_ch, out_ch, k_size, stride, padding)
         conv.weight.data.normal_()
-        conv.weight.data.zero_()
-        self.conv = conv
+        conv.bias.data.zero_()
+        self.conv = equal_lr(conv)
 
     def forward(self, x):
         out = self.conv(x)
@@ -138,12 +139,12 @@ class Block(nn.Module):
 
 
 class Generator(nn.Module):
-    def __init__(self, ch_list=[512, 512, 512, 512, 256, 128, 64, 32], n_label=10, n_slope=0.2):
+    def __init__(self, channel_list=[512, 512, 512, 512, 256, 128, 64, 32], n_label=10, n_slope=0.2):
         super(Generator, self).__init__()
 
-        self.label_embed = nn.Embedding(n_label, n_label)
+        # self.label_embed = nn.Embedding(n_label, n_label)
+        # self.label_embed.weight.data.normal_()
         self.code_norm = PixelNorm()
-        self.label_embed.weight.data.normal_()
 
         # self.progress = nn.ModuleList([Block(ch_list[0], ch_list[0], 4, 3, 3, 1, norm="PN"),  # [B, 512, 4, 4]
         #                                Block(ch_list[0], ch_list[1], 3, 1, 3, 1, norm="PN"),  # [B, 512, 8, 8]
@@ -167,23 +168,23 @@ class Generator(nn.Module):
 
         progress_layers = []
         to_rgb_layers = []
-        for i in range(len(ch_list)):
+        for i in range(len(channel_list)):
             if i == 0:
-                progress_layers.append(Block(ch_list[i], ch_list[i], 4, 3, 3, 1, norm="PN"))
+                progress_layers.append(Block(channel_list[i], channel_list[i], 4, 3, 3, 1, norm="PN"))
             else:
-                progress_layers.append(Block(ch_list[i-1], ch_list[i], 3, 1, 3, 1, norm="PN"))
-            to_rgb_layers.append(nn.Conv2d(ch_list[i], 3, 1))
+                progress_layers.append(Block(channel_list[i - 1], channel_list[i], 3, 1, 3, 1, norm="PN"))
+            to_rgb_layers.append(nn.Conv2d(channel_list[i], 3, 1))
 
-        self.progress = nn.ModuleList(*progress_layers)
-        self.to_rgb = nn.ModuleList(*to_rgb_layers)
+        self.progress = nn.ModuleList(progress_layers)
+        self.to_rgb = nn.ModuleList(to_rgb_layers)
 
-    def forward(self, x, label, step=0, alpha=-1):
-        input = self.code_norm(x)
-        label = self.label_embed(label)
-        out = torch.cat([input, label], 1).unsqueeze(2).unsqueeze(3)
+    def forward(self, x, step=0, alpha=-1):
+        out = self.code_norm(x)
+        # label = self.label_embed(label)
+        # out = torch.cat([input, label], 1).unsqueeze(2).unsqueeze(3)
 
         for i, (block, to_rgb) in enumerate(zip(self.progress, self.to_rgb)):
-            if i > 0 and step > 0:
+            if i > 0:
                 upsample = F.upsample(out, scale_factor=2)
                 out = block(upsample)
             else:
@@ -191,8 +192,7 @@ class Generator(nn.Module):
 
             if i == step:
                 out = to_rgb(out)
-
-                if i < 0 and 0 <= alpha < 1:
+                if i != 0 and 0 <= alpha < 1:               # The first module does not need previous to_rgb module
                     skip_rgb = self.to_rgb[i-1](upsample)
                     out = (1-alpha)*skip_rgb + alpha*out
                 break
@@ -200,45 +200,64 @@ class Generator(nn.Module):
 
 
 class Discriminator(nn.Module):
-    def __init__(self, ch_list=[512, 512, 512, 512, 256, 128, 64, 32], n_slope=0.2, n_label=10):
+    def __init__(self, channel_list=[512, 512, 512, 512, 256, 128, 64, 32], n_slope=0.2, n_label=10):
         super(Discriminator, self).__init__()
-        reversed(ch_list)
+        reversed(channel_list)
 
         self.std_concat = StdConcat()
 
         progress_layers = []
         from_rgb_layers = []
-        for i in range(len(ch_list)):
-            if i == (len(ch_list)-1):
-                progress_layers.append(Block(ch_list[i]+1, ch_list[i], 3, 1, 3, 1, norm="SN", equlized=False))
+        for i in range(len(channel_list) - 1, -1, -1):
+            if i == 0:
+                progress_layers.append(Block(channel_list[i] + 1, channel_list[i], 3, 1, 4, 0, norm="SN", equlized=False))
             else:
-                progress_layers.append(Block(ch_list[i], ch_list[i+1], 3, 1, 3, 1, norm="SN", equlized=False))
-            from_rgb_layers.append(nn.Conv2d(3, ch_list[i], 1))
+                progress_layers.append(Block(channel_list[i], channel_list[i - 1], 3, 1, 3, 1, norm="SN", equlized=False))
+            from_rgb_layers.append(nn.Conv2d(3, channel_list[i], 1))
 
-        self.progress = nn.ModuleList(*progress_layers)
-        self.from_rgb = nn.ModuleList(*from_rgb_layers)
+        self.progress = nn.ModuleList(progress_layers)
+        self.from_rgb = nn.ModuleList(from_rgb_layers)
 
         self.n_layer = len(self.progress)
-        self.linear = nn.Linear(512, 1 + n_label)
+        self.linear = nn.Linear(512, 1)
 
     def forward(self, x, step=0, alpha=-1):
         step = self.n_layer - 1 - step
-
         for i in range(step, self.n_layer):
-            out = self.from_rgb[i](x)
+            if i == step:
+                out = self.from_rgb[i](x)
+
             if i == (self.n_layer-1):
                 out = self.std_concat(out)
+                out = self.progress[i](out)
+            else:
+                out = self.progress[i](out)
+                out = F.avg_pool2d(out, 2)
 
-            out = self.progress[i](out)
-
-            out = F.avg_pool2d(out, 2)
-            if i == step and 0 <= alpha < 1:
-                skip_rgb = F.avg_pool2d(x, 2)
-                skip_rgb = self.from_rgb[i+1](skip_rgb)
-                out = (1-alpha)*skip_rgb + alpha*out
+            if i == step:
+                if i != 7 and 0 <= alpha < 1:
+                    downsample = F.avg_pool2d(x, 2)
+                    skip_rgb = self.from_rgb[i+1](downsample)
+                    out = (1-alpha)*skip_rgb + alpha*out
 
         out = out.squeeze(3).squeeze(2)
         out = self.linear(out)
 
-        return out[:, 0], out[:, 1:]
+        return out[:, 0]
 
+
+if __name__ == "__main__":
+    z = torch.rand(4, 512, 1, 1)
+    img = torch.rand(4, 3, 512, 512)
+
+    g = Generator(channel_list=[512, 512, 512, 512, 256, 128, 64, 32])
+    d = Discriminator(channel_list=[512, 512, 512, 512, 256, 128, 64, 32])
+    alpha = 0.5
+
+    print("Generator")
+    for step in range(8):
+        out = g(z, step=step, alpha=alpha)
+        print(out.shape)
+    print("Discriminator")
+    out = d(img, step=7, alpha=alpha)
+    print(out.shape)

@@ -22,13 +22,14 @@ class CustomDataset(Dataset):
         return len(self.img_list)
 
 
-def data_loader(config):
+def data_loader(root, batch_size, img_size):
     transform = []
-    transfrom.append(Transforms.RandomHorizontalFlip())
-    transfrom.append(Transforms.ToTensor())
-    transfrom.append(Transforms.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)))
+    transform.append(Transforms.RandomHorizontalFlip())
+    transform.append(Transforms.ToTensor())
+    transform.append(Transforms.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)))
     transform = Transforms.Compose(transform)
 
-    dataset = CustomDataset(config.data_root, transform=transform)
-    loader = DataLoader(dataset, batch_size=config.batch_size, shuffle=True, num_workers=8)
+    data_root = os.path.join(root, "FFHQ_%d" % img_size)
+    dataset = CustomDataset(data_root, transform=transform)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=8, drop_last=True)
     return loader
