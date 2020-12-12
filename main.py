@@ -51,10 +51,10 @@ if __name__ == '__main__':
     parser.add_argument('--beta1', type=float, default=0.0, help='beta1')
     parser.add_argument('--beta2', type=float, default=0.999, help='beta2')
 
-    parser.add_argument('--lambda_gp', type=float, default=1.0, help='weight of gradient penalty')
+    parser.add_argument('--lambda_gp', type=float, default=10, help='weight of gradient penalty')
     parser.add_argument('--n_critic', type=int, default=1)
 
-    parser.add_argument('--max_iter', type=int, default=2000)
+    parser.add_argument('--max_iter', type=int, default=50000)
 
     # Config - Path
     parser.add_argument('--data_root', type=str, default="/home/nas1_userC/yonggyu/dataset/FFHQ")
@@ -66,10 +66,10 @@ if __name__ == '__main__':
     parser.add_argument('--result_dir', type=str, default='result')
 
     # Config - Miscellanceous
-    parser.add_argument('--print_loss_iter', type=int, default=1000)
-    parser.add_argument('--save_image_iter', type=int, default=1000)
-    parser.add_argument('--save_parameter_iter', type=int, default=1000)
-
+    parser.add_argument('--print_loss_iter', type=int, default=5000)
+    parser.add_argument('--save_image_iter', type=int, default=5000)
+    parser.add_argument('--save_parameter_iter', type=int, default=5000)
+    parser.add_argument('--save_log_iter', type=int, default=1000)
     config = parser.parse_args()
 
     print(config)

@@ -6,9 +6,13 @@ import torch.optim.lr_scheduler as lr_scheduler
 
 from model import Generator
 from model import Discriminator
-from dataloader import data_loader
+from torch_ema import ExponentialMovingAverage
 
+from dataloader import data_loader
 from utils import cycle
+from torch.nn import DataParallel
+
+from torch.utils.tensorboard import SummaryWriter
 
 dev = 'cpu'
 if torch.cuda.is_available():
@@ -29,10 +33,8 @@ class Solver():
         self.decay_iter = config.decay_iter
         self.beta1 = config.beta1
         self.beta2 = config.beta2
-
         self.n_critic = config.n_critic
         self.lambda_gp = config.lambda_gp
-
         self.max_iter = config.max_iter
 
         # Config - Test
@@ -49,19 +51,24 @@ class Solver():
         self.print_loss_iter = config.print_loss_iter
         self.save_image_iter = config.save_image_iter
         self.save_parameter_iter = config.save_parameter_iter
+        self.save_log_iter = config.save_log_iter
+
+        self.writer = SummaryWriter(self.log_root)
 
     def build_model(self):
         self.G = Generator(channel_list=self.channel_list)
+        self.G_ema = Generator(channel_list=self.channel_list)
         self.D = Discriminator(channel_list=self.channel_list)
+
+        self.G = DataParallel(self.G).to(dev)
+        self.G_ema = DataParallel(self.G_ema).to(dev)
+        self.D = DataParallel(self.D).to(dev)
 
         self.g_optimizer = torch.optim.Adam(params=self.G.parameters(), lr=self.g_lr, betas=[self.beta1, self.beta2])
         self.d_optimizer = torch.optim.Adam(params=self.D.parameters(), lr=self.d_lr, betas=[self.beta1, self.beta2])
 
         self.g_scheduler = lr_scheduler.StepLR(self.g_optimizer, step_size=self.decay_iter, gamma=self.decay_ratio)
         self.d_scheduler = lr_scheduler.StepLR(self.d_optimizer, step_size=self.decay_iter, gamma=self.decay_ratio)
-
-        self.G.to(dev)
-        self.D.to(dev)
 
         print("Print model G, D")
         print(self.G)
@@ -71,20 +78,19 @@ class Solver():
         file_name = 'ckpt_' + str(iters) + '.pkl'
         ckpt_path = os.path.join(self.model_root, file_name)
         ckpt = {
-            'G': self.G.state_dict(),
+            'G': self.G_ema.state_dict(),
             'D': self.D.state_dict()
         }
         torch.save(ckpt, ckpt_path)
 
     def save_img(self, iters, fixed_z, step):
-        self.G.eval()
         img_path = os.path.join(self.sample_root, "%d_%d.png" % (2*(2**(step+1)), iters))
         with torch.no_grad():
             if step > 2:
-                generated_imgs = self.G(fixed_z[:128/(2**(step-2))].to(dev), step, 1)
+                generated_imgs = self.G_ema(fixed_z[:128/(2**(step-2))].to(dev), step, 1)
                 save_image(make_grid(generated_imgs.cpu(), nrow=4, padding=2), img_path)
             else:
-                generated_imgs = self.G(fixed_z.to(dev), step, 1)
+                generated_imgs = self.G_ema(fixed_z.to(dev), step, 1)
                 save_image(make_grid(generated_imgs.cpu(), nrow=4, padding=2), img_path)
 
     def reset_grad(self):
@@ -94,6 +100,23 @@ class Solver():
     def lr_update(self):
         self.g_scheduler.step()
         self.d_scheduler.step()
+
+    def set_phase(self, mode="train"):
+        if mode == "train":
+            self.G.train()
+            self.G_ema.train()
+            self.D.train()
+        elif mode == "test":
+            self.G.eval()
+            self.G_ema.eval()
+            self.D.eval()
+
+    def exponential_moving_average(self, beta=0.999):
+        with torch.no_grad():
+            G_param_dict = dict(self.G.named_parameters())
+            for name, g_ema_param in self.G_ema.named_parameters():
+                g_param = G_param_dict[name]
+                g_ema_param.copy_(beta * g_ema_param + (1. - beta) * g_param)
 
     def gradient_penalty(self, y, x):
         """Compute gradient penalty: (L2_norm(dy/dx) - 1)**2."""
@@ -120,6 +143,12 @@ class Solver():
                 loader = data_loader(self.data_root, self.batch_size, img_size=2*(2**(step+1)))
 
             loader = iter(cycle(loader))
+            if step == 0 or step == 1 or step == 2:
+                self.max_iter = 20000
+            elif step == 3 or step == 4 or step == 5:
+                self.max_iter = 80000
+            else:
+                self.max_iter = 100000
 
             for iters in range(self.max_iter):
                 real_img = next(loader)
@@ -129,9 +158,8 @@ class Solver():
                 # ===============================================================#
                 #                    1. Train the discriminator                  #
                 # ===============================================================#
+                self.set_phase(mode="train")
                 self.reset_grad()
-                self.G.train()
-                self.D.train()
 
                 # Compute loss with real images.
                 d_real_out = self.D(real_img, step, alpha)
@@ -171,9 +199,11 @@ class Solver():
                     self.g_optimizer.step()
 
                 # ===============================================================#
-                #                  3. Save parameters and images                 #
+                #                   3. Save parameters and images                #
                 # ===============================================================#
                 # self.lr_update()
+                self.set_phase(mode="test")
+                self.exponential_moving_average()
 
                 # Print total loss
                 if iters % self.print_loss_iter == 0:
@@ -189,3 +219,12 @@ class Solver():
                 # Save the G and D parameters.
                 if iters % self.save_parameter_iter == 0:
                     self.restore_model(iters)
+
+                # Save the logs on the tensorboard.
+                if iters % self.save_log_iter == 0:
+                    self.writer.add_scalar('g_loss/g_loss', g_loss.item(), iters)
+                    self.writer.add_scalar('d_loss/d_loss_total', d_loss.item(), iters)
+                    self.writer.add_scalar('d_loss/d_loss_real', d_loss_real.item(), iters)
+                    self.writer.add_scalar('d_loss/d_loss_fake', d_loss_fake.item(), iters)
+                    self.writer.add_scalar('d_loss/d_loss_gp', d_loss_gp.item(), iters)
+
