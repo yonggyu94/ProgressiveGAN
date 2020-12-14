@@ -6,7 +6,6 @@ import torch.optim.lr_scheduler as lr_scheduler
 
 from model import Generator
 from model import Discriminator
-from torch_ema import ExponentialMovingAverage
 
 from dataloader import data_loader
 from utils import cycle
@@ -74,8 +73,23 @@ class Solver():
         print(self.G)
         print(self.D)
 
-    def restore_model(self, iters):
-        file_name = 'ckpt_' + str(iters) + '.pkl'
+    def load_model(self, pkl_path, channel_list):
+        ckpt = torch.load(pkl_path)
+
+        self.G = Generator(channel_list=channel_list)
+        self.G_ema = Generator(channel_list=channel_list)
+        self.D = Discriminator(channel_list=channel_list)
+
+        self.G = DataParallel(self.G).to(dev)
+        self.G_ema = DataParallel(self.G_ema).to(dev)
+        self.D = DataParallel(self.D).to(dev)
+
+        self.G.load_state_dict(ckpt["G"])
+        self.G_ema.load_state_dict(ckpt["G_ema"])
+        self.D.load_state_dict(ckpt["D"])
+
+    def save_model(self, iters, step):
+        file_name = 'ckpt_%d_%d.pkl' % ((2*(2**(step+1)), iters))
         ckpt_path = os.path.join(self.model_root, file_name)
         ckpt = {
             'G': self.G_ema.state_dict(),
@@ -86,12 +100,8 @@ class Solver():
     def save_img(self, iters, fixed_z, step):
         img_path = os.path.join(self.sample_root, "%d_%d.png" % (2*(2**(step+1)), iters))
         with torch.no_grad():
-            if step > 2:
-                generated_imgs = self.G_ema(fixed_z[:128/(2**(step-2))].to(dev), step, 1)
-                save_image(make_grid(generated_imgs.cpu(), nrow=4, padding=2), img_path)
-            else:
-                generated_imgs = self.G_ema(fixed_z.to(dev), step, 1)
-                save_image(make_grid(generated_imgs.cpu(), nrow=4, padding=2), img_path)
+            generated_imgs = self.G_ema(fixed_z[:self.batch_size].to(dev), step, 1)
+            save_image(make_grid(generated_imgs.cpu()/2+1/2, nrow=4, padding=2), img_path)
 
     def reset_grad(self):
         self.g_optimizer.zero_grad()
@@ -137,23 +147,23 @@ class Solver():
         self.build_model()
 
         for step in range(len(self.channel_list)):
-            if step > 2:
-                loader = data_loader(self.data_root, self.batch_size/(2**(step-2)), img_size=2*(2**(step+1)))
-            else:
-                loader = data_loader(self.data_root, self.batch_size, img_size=2*(2**(step+1)))
-
+            if step > 4:
+                self.batch_size = self.batch_size // 2
+            loader = data_loader(self.data_root, self.batch_size, img_size=2 * (2 ** (step + 1)))
             loader = iter(cycle(loader))
+
             if step == 0 or step == 1 or step == 2:
                 self.max_iter = 20000
             elif step == 3 or step == 4 or step == 5:
-                self.max_iter = 80000
+                self.max_iter = 50000
             else:
                 self.max_iter = 100000
 
-            for iters in range(self.max_iter):
+            alpha = 0.0
+
+            for iters in range(self.max_iter+1):
                 real_img = next(loader)
                 real_img = real_img.to(dev)
-                alpha = 1 / (self.max_iter // 2)
 
                 # ===============================================================#
                 #                    1. Train the discriminator                  #
@@ -202,13 +212,15 @@ class Solver():
                 #                   3. Save parameters and images                #
                 # ===============================================================#
                 # self.lr_update()
+                torch.cuda.synchronize()
+                alpha += 1 / (self.max_iter // 2)
                 self.set_phase(mode="test")
                 self.exponential_moving_average()
 
                 # Print total loss
                 if iters % self.print_loss_iter == 0:
                     print("Step : [%d/%d], Iter : [%d/%d], D_loss : [%.3f, %.3f, %.3f., %.3f], G_loss : %.3f" % (
-                        step, len(self.channel_list), iters, self.max_iter, d_loss.item(), d_loss_real.item(),
+                        step, len(self.channel_list)-1, iters, self.max_iter, d_loss.item(), d_loss_real.item(),
                         d_loss_fake.item(), d_loss_gp.item(), g_loss.item()
                     ))
 
@@ -218,7 +230,7 @@ class Solver():
 
                 # Save the G and D parameters.
                 if iters % self.save_parameter_iter == 0:
-                    self.restore_model(iters)
+                    self.save_model(iters, step)
 
                 # Save the logs on the tensorboard.
                 if iters % self.save_log_iter == 0:

@@ -50,15 +50,12 @@ if __name__ == '__main__':
     parser.add_argument('--decay_ratio', type=float, default=0.1, help='learning rate decay ratio')
     parser.add_argument('--beta1', type=float, default=0.0, help='beta1')
     parser.add_argument('--beta2', type=float, default=0.999, help='beta2')
-
     parser.add_argument('--lambda_gp', type=float, default=10, help='weight of gradient penalty')
     parser.add_argument('--n_critic', type=int, default=1)
-
     parser.add_argument('--max_iter', type=int, default=50000)
 
     # Config - Path
     parser.add_argument('--data_root', type=str, default="/home/nas1_userC/yonggyu/dataset/FFHQ")
-
     parser.add_argument('--exp', type=str, default='PGGAN_512')
     parser.add_argument('--log_dir', type=str, default='log')
     parser.add_argument('--model_dir', type=str, default='model')
