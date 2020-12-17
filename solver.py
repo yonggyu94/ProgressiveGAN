@@ -92,7 +92,8 @@ class Solver():
         file_name = 'ckpt_%d_%d.pkl' % ((2*(2**(step+1)), iters))
         ckpt_path = os.path.join(self.model_root, file_name)
         ckpt = {
-            'G': self.G_ema.state_dict(),
+            'G': self.G.state_dict(),
+            'G_ema': self.G_eam.state_dict(),
             'D': self.D.state_dict()
         }
         torch.save(ckpt, ckpt_path)
@@ -116,6 +117,7 @@ class Solver():
             self.G.train()
             self.G_ema.train()
             self.D.train()
+
         elif mode == "test":
             self.G.eval()
             self.G_ema.eval()

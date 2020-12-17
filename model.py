@@ -15,35 +15,38 @@ class WrongNonLinearException(Exception):
         return 'You should choose \'relu\', \'leaky_relu\' or \'tanh\''
 
 
-class EqualLR:
+class EqualizedLR:
     def __init__(self, name):
         self.name = name
 
+    # output normalized weight
     def compute_weight(self, module):
-        weight = getattr(module, self.name + '_orig')
-        fan_in = weight.data.size(1) * weight.data[0][0].numel()
-
-        return weight * math.sqrt(2 / fan_in)
+        save_weight = getattr(module, 'save_'+self.name)
+        fan_in = save_weight.data.numel() // save_weight.data.size(0)
+        return save_weight * math.sqrt(2 / fan_in)
 
     @staticmethod
     def apply(module, name):
-        fn = EqualLR(name)
-
+        fn = EqualizedLR(name)
+        # get weight parameter
         weight = getattr(module, name)
-        del module._parameters[name]
-        module.register_parameter(name + '_orig', nn.Parameter(weight.data))
+        # delete weight parameter
+        delattr(module, name)
+        # assign new_weight parameter
+        # save_weight = nn.Parameter(weight.data)
+        module.register_parameter('save_'+name, weight)
+        # register pre_hook
         module.register_forward_pre_hook(fn)
-
         return fn
 
+    # add weight in the module
     def __call__(self, module, input):
         weight = self.compute_weight(module)
         setattr(module, self.name, weight)
 
 
-def equal_lr(module, name='weight'):
-    EqualLR.apply(module, name)
-
+def equalized_lr(module, name="weight"):
+    EqualizedLR.apply(module, name)
     return module
 
 
@@ -53,7 +56,7 @@ class EqualizedConv2d(nn.Module):
         conv = nn.Conv2d(in_ch, out_ch, k_size, stride, padding)
         conv.weight.data.normal_()
         conv.bias.data.zero_()
-        self.conv = equal_lr(conv)
+        self.conv = equalized_lr(conv)
 
     def forward(self, x):
         out = self.conv(x)
@@ -139,32 +142,9 @@ class Block(nn.Module):
 
 
 class Generator(nn.Module):
-    def __init__(self, channel_list=[512, 512, 512, 512, 256, 128, 64, 32], n_label=10, n_slope=0.2):
+    def __init__(self, channel_list=[512, 512, 512, 512, 256, 128, 64, 32], n_slope=0.2):
         super(Generator, self).__init__()
-
-        # self.label_embed = nn.Embedding(n_label, n_label)
-        # self.label_embed.weight.data.normal_()
         self.code_norm = PixelNorm()
-
-        # self.progress = nn.ModuleList([Block(ch_list[0], ch_list[0], 4, 3, 3, 1, norm="PN"),  # [B, 512, 4, 4]
-        #                                Block(ch_list[0], ch_list[1], 3, 1, 3, 1, norm="PN"),  # [B, 512, 8, 8]
-        #                                Block(ch_list[1], ch_list[2], 3, 1, 3, 1, norm="PN"),  # [B, 512, 16, 16]
-        #                                Block(ch_list[2], ch_list[3], 3, 1, 3, 1, norm="PN"),  # [B, 512, 32, 32]
-        #                                Block(ch_list[3], ch_list[4], 3, 1, 3, 1, norm="PN"),  # [B, 256, 64, 64]
-        #                                Block(ch_list[4], ch_list[5], 3, 1, 3, 1, norm="PN"),  # [B, 128, 128, 128]
-        #                                Block(ch_list[5], ch_list[6], 3, 1, 3, 1, norm="PN"),  # [B, 64, 256, 256]
-        #                                Block(ch_list[6], ch_list[7], 3, 1, 3, 1, norm="PN")   # [B, 32, 512, 512]
-        #                                ])
-
-        # self.to_rgb = nn.ModuleList([nn.Conv2d(512, 3, 1),
-        #                              nn.Conv2d(512, 3, 1),
-        #                              nn.Conv2d(512, 3, 1),
-        #                              nn.Conv2d(512, 3, 1),
-        #                              nn.Conv2d(256, 3, 1),
-        #                              nn.Conv2d(128, 3, 1),
-        #                              nn.Conv2d(64, 3, 1),
-        #                              nn.Conv2d(32, 3, 1)
-        #                              ])
 
         progress_layers = []
         to_rgb_layers = []
@@ -180,8 +160,6 @@ class Generator(nn.Module):
 
     def forward(self, x, step=0, alpha=-1):
         out = self.code_norm(x)
-        # label = self.label_embed(label)
-        # out = torch.cat([input, label], 1).unsqueeze(2).unsqueeze(3)
 
         for i, (block, to_rgb) in enumerate(zip(self.progress, self.to_rgb)):
             if i > 0:
@@ -200,7 +178,7 @@ class Generator(nn.Module):
 
 
 class Discriminator(nn.Module):
-    def __init__(self, channel_list=[512, 512, 512, 512, 256, 128, 64, 32], n_slope=0.2, n_label=10):
+    def __init__(self, channel_list=[512, 512, 512, 512, 256, 128, 64, 32]):
         super(Discriminator, self).__init__()
         reversed(channel_list)
 
