@@ -10,6 +10,6 @@
 
 ## How to use
 ### Train
-```python main.py --root=data/edges2shoes --exp=PGGAN_512 --data_root=$PATH```
+```python main.py --exp=PGGAN_512 --data_root=$PATH```
 
 The model parameters and images will be stored in the PGGAN_512 folder.
