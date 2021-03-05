@@ -1,7 +1,7 @@
 # ProgressiveGAN
 
 ## Result
-Image size is 512 x 512
+### Image size is 512 x 512
 <p align="center"><img width="100%" src="png/generated_image.png" /></p>
 
 ## Prerequisites
