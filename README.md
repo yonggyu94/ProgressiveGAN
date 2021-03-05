@@ -1,4 +1,4 @@
-# ProgressiveGAN
+# ProgressiveGAN-pytorch
 
 ## Result
 Image size is 512 x 512
