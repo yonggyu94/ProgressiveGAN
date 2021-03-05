@@ -9,7 +9,7 @@ Image size is 512 x 512
 * [PyTorch 1.7.0](http://pytorch.org/)
 
 ## How to use
-## Dataset
+### Dataset
 ```
 ├── dataset
    └── FFHQ
